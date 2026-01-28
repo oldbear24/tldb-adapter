@@ -5,10 +5,10 @@ import { decompress } from 'compress-json';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const CACHE_TTL = process.env.CACHE_TTL || 300000; // Default 5 minutes (300000 ms)
+const CACHE_TTL = Number(process.env.CACHE_TTL) || 300000; // Default 5 minutes (300000 ms)
 
 // Simple in-memory cache
-let cache = {
+const cache = {
   data: null,
   timestamp: null
 };
@@ -24,6 +24,19 @@ function isCacheValid() {
   const age = now - cache.timestamp;
   return age < CACHE_TTL;
 }
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    cache: {
+      enabled: true,
+      ttl: CACHE_TTL,
+      hasData: !!cache.data,
+      age: cache.timestamp ? Date.now() - cache.timestamp : null
+    }
+  });
+});
 
 // Simple GET endpoint to return { items, traits }
 app.get('/api/data', async (req, res) => {
