@@ -5,10 +5,40 @@ import { decompress } from 'compress-json';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const CACHE_TTL = process.env.CACHE_TTL || 300000; // Default 5 minutes (300000 ms)
+
+// Simple in-memory cache
+let cache = {
+  data: null,
+  timestamp: null
+};
+
+/**
+ * Check if cached data is still valid
+ */
+function isCacheValid() {
+  if (!cache.data || !cache.timestamp) {
+    return false;
+  }
+  const now = Date.now();
+  const age = now - cache.timestamp;
+  return age < CACHE_TTL;
+}
 
 // Simple GET endpoint to return { items, traits }
 app.get('/api/data', async (req, res) => {
   try {
+    // Check if we have valid cached data
+    if (isCacheValid()) {
+      console.log('✅ Cache hit - serving from cache');
+      res.set('X-Cache', 'HIT');
+      const age = Math.floor((Date.now() - cache.timestamp) / 1000);
+      res.set('Age', age.toString());
+      return res.json(cache.data);
+    }
+
+    console.log('❌ Cache miss - fetching from upstream');
+    
     // 1. Fetch raw JSON
     const resp = await fetch('https://tldb.info/auction-house/__data.json',{
                               headers: {
@@ -32,8 +62,15 @@ app.get('/api/data', async (req, res) => {
     const items = decompress(apiData.items);
     const traits = apiData.traits;
 
-    // 4. Return processed JSON
-    return res.json({ items, traits });
+    // 4. Store in cache
+    const result = { items, traits };
+    cache.data = result;
+    cache.timestamp = Date.now();
+    
+    // 5. Return processed JSON with cache headers
+    res.set('X-Cache', 'MISS');
+    res.set('Cache-Control', `public, max-age=${Math.floor(CACHE_TTL / 1000)}`);
+    return res.json(result);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -42,4 +79,5 @@ app.get('/api/data', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}/api/data`);
+  console.log(`📦 Cache TTL: ${CACHE_TTL}ms (${Math.floor(CACHE_TTL / 1000)}s)`);
 });
