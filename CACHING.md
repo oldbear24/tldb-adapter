@@ -37,6 +37,15 @@ Cache operations are logged to the console:
 - `❌ Cache miss - fetching from upstream` - Fetching fresh data
 - Cache status available at `/health` endpoint
 
+### 6. Performance Metrics
+Comprehensive metrics tracked and persisted in LevelDB:
+- **Cache hits and misses**: Track how often cache is used
+- **Hit rate**: Percentage of requests served from cache
+- **Request counters**: Total requests processed
+- **Timestamps**: Track when cache events occur
+- **Persistence**: All metrics survive server restarts
+- **Real-time**: Updated with every cache operation
+
 ## Usage
 
 ### Basic Usage
@@ -70,12 +79,35 @@ Response:
     "path": "./cache-db",
     "ttl": 300000,
     "hasData": true,
-    "age": 45000
+    "age": 45000,
+    "metrics": {
+      "hits": 42,
+      "misses": 8,
+      "totalRequests": 50,
+      "hitRate": "84.00%",
+      "lastHit": 1234567890123,
+      "lastMiss": 1234567880000,
+      "lastUpdate": 1234567885000
+    }
   }
 }
 ```
 
 **Note**: All time values are in milliseconds.
+
+### Cache Metrics
+
+The health endpoint includes detailed metrics about cache performance:
+
+- **hits**: Number of successful cache hits
+- **misses**: Number of cache misses (data fetched from upstream)
+- **totalRequests**: Total number of requests processed
+- **hitRate**: Percentage of requests served from cache (calculated as hits/totalRequests)
+- **lastHit**: Timestamp of the most recent cache hit
+- **lastMiss**: Timestamp of the most recent cache miss
+- **lastUpdate**: Timestamp when cache data was last updated
+
+All metrics are stored in LevelDB and persist across server restarts.
 
 ## How It Works
 
@@ -112,6 +144,7 @@ Response:
 - **Cost Savings**: Reduced bandwidth and processing
 - **Better UX**: Faster response times for end users
 - **Production Ready**: Suitable for containerized and serverless deployments
+- **Performance Insights**: Built-in metrics for monitoring cache effectiveness
 
 ## Limitations
 
@@ -125,7 +158,8 @@ Response:
 Possible improvements for production use:
 - Redis for distributed caching across multiple instances
 - Cache invalidation API endpoint
-- Metrics and monitoring (Prometheus, Grafana)
+- Advanced metrics dashboards (Prometheus, Grafana)
+- Metrics export API for external monitoring
 - Cache warming on startup
 - Conditional requests (ETags)
 - Request coalescing to prevent concurrent duplicate upstream requests
@@ -141,12 +175,19 @@ Possible improvements for production use:
 - **Keys used**:
   - `api-data`: Stores the cached API response
   - `api-data-timestamp`: Stores the cache timestamp in milliseconds
+  - `cache-metrics`: Stores performance metrics (hits, misses, timestamps)
 
 ### Cache Invalidation
-To manually clear the cache:
+To manually clear the cache and metrics:
 ```bash
 # Stop the server
-# Delete the cache directory
+# Delete the cache directory (includes cached data and metrics)
 rm -rf ./cache-db
 # Restart the server
+```
+
+To reset only metrics while preserving cache:
+```bash
+# Use LevelDB CLI or create a custom endpoint to reset the cache-metrics key
+# Metrics will be automatically re-initialized on next access
 ```
