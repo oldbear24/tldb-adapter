@@ -44,6 +44,72 @@ process.on('SIGTERM', async () => {
 
 const CACHE_KEY = 'api-data';
 const TIMESTAMP_KEY = 'api-data-timestamp';
+const METRICS_KEY = 'cache-metrics';
+
+/**
+ * Initialize or get cache metrics from LevelDB
+ */
+async function getMetrics() {
+  try {
+    const metrics = await db.get(METRICS_KEY);
+    if (metrics === undefined || metrics === null) {
+      // Initialize default metrics
+      const defaultMetrics = {
+        hits: 0,
+        misses: 0,
+        totalRequests: 0,
+        lastHit: null,
+        lastMiss: null,
+        lastUpdate: null
+      };
+      await db.put(METRICS_KEY, defaultMetrics);
+      return defaultMetrics;
+    }
+    return metrics;
+  } catch (err) {
+    // Initialize default metrics on error
+    const defaultMetrics = {
+      hits: 0,
+      misses: 0,
+      totalRequests: 0,
+      lastHit: null,
+      lastMiss: null,
+      lastUpdate: null
+    };
+    await db.put(METRICS_KEY, defaultMetrics);
+    return defaultMetrics;
+  }
+}
+
+/**
+ * Update cache metrics - record a cache hit
+ */
+async function recordCacheHit() {
+  try {
+    const metrics = await getMetrics();
+    metrics.hits += 1;
+    metrics.totalRequests += 1;
+    metrics.lastHit = Date.now();
+    await db.put(METRICS_KEY, metrics);
+  } catch (err) {
+    console.error('Error recording cache hit:', err);
+  }
+}
+
+/**
+ * Update cache metrics - record a cache miss
+ */
+async function recordCacheMiss() {
+  try {
+    const metrics = await getMetrics();
+    metrics.misses += 1;
+    metrics.totalRequests += 1;
+    metrics.lastMiss = Date.now();
+    await db.put(METRICS_KEY, metrics);
+  } catch (err) {
+    console.error('Error recording cache miss:', err);
+  }
+}
 
 /**
  * Check if cached data is still valid
@@ -100,6 +166,16 @@ async function setCachedData(data) {
     { type: 'put', key: CACHE_KEY, value: data },
     { type: 'put', key: TIMESTAMP_KEY, value: timestamp }
   ]);
+  
+  // Update metrics with last update time
+  try {
+    const metrics = await getMetrics();
+    metrics.lastUpdate = timestamp;
+    await db.put(METRICS_KEY, metrics);
+  } catch (err) {
+    console.error('Error updating metrics lastUpdate:', err);
+  }
+  
   return timestamp;
 }
 
@@ -127,6 +203,7 @@ app.get('/health', async (req, res) => {
     const data = await getCachedData();
     const hasData = timestamp !== null && data !== null;
     const age = hasData ? Date.now() - timestamp : null;
+    const metrics = await getMetrics();
     
     const response = {
       status: 'ok',
@@ -135,7 +212,16 @@ app.get('/health', async (req, res) => {
         type: 'leveldb',
         ttl: CACHE_TTL,
         hasData: hasData,
-        age: age
+        age: age,
+        metrics: {
+          hits: metrics.hits,
+          misses: metrics.misses,
+          totalRequests: metrics.totalRequests,
+          hitRate: metrics.totalRequests > 0 ? (metrics.hits / metrics.totalRequests * 100).toFixed(2) + '%' : '0%',
+          lastHit: metrics.lastHit,
+          lastMiss: metrics.lastMiss,
+          lastUpdate: metrics.lastUpdate
+        }
       }
     };
     
@@ -176,6 +262,27 @@ if (process.env.NODE_ENV !== 'production') {
       res.status(500).json({ error: err.message });
     }
   });
+  
+  // Test endpoint to get cached data (for testing cache hits)
+  app.get('/test/cached-data', async (req, res) => {
+    try {
+      if (await isCacheValid()) {
+        console.log('✅ Test endpoint - cache hit');
+        await recordCacheHit();
+        const cachedData = await getCachedData();
+        res.set('X-Cache', 'HIT');
+        return res.json({ success: true, data: cachedData });
+      } else {
+        console.log('❌ Test endpoint - cache miss');
+        await recordCacheMiss();
+        res.set('X-Cache', 'MISS');
+        return res.json({ success: false, message: 'No cached data available' });
+      }
+    } catch (err) {
+      console.error('Error in test endpoint:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 }
 
 // Simple GET endpoint to return { items, traits }
@@ -184,6 +291,8 @@ app.get('/api/data', async (req, res) => {
     // Check if we have valid cached data
     if (await isCacheValid()) {
       console.log('✅ Cache hit - serving from cache (LevelDB)');
+      await recordCacheHit();
+      
       const cachedData = await getCachedData();
       const timestamp = await getCacheTimestamp();
       
@@ -194,6 +303,7 @@ app.get('/api/data', async (req, res) => {
     }
 
     console.log('❌ Cache miss - fetching from upstream');
+    await recordCacheMiss();
     
     // 1. Fetch raw JSON
     const resp = await fetch('https://tldb.info/auction-house/__data.json',{
