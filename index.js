@@ -83,6 +83,8 @@ async function getMetrics() {
 
 /**
  * Update cache metrics - record a cache hit
+ * Note: This operation is not atomic with cache reads. Under high concurrency,
+ * metrics may be slightly inaccurate but will not affect cache functionality.
  */
 async function recordCacheHit() {
   try {
@@ -98,6 +100,8 @@ async function recordCacheHit() {
 
 /**
  * Update cache metrics - record a cache miss
+ * Note: This operation is not atomic with cache reads. Under high concurrency,
+ * metrics may be slightly inaccurate but will not affect cache functionality.
  */
 async function recordCacheMiss() {
   try {
