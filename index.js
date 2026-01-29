@@ -9,8 +9,38 @@ const PORT = process.env.PORT || 3000;
 const CACHE_TTL = Number(process.env.CACHE_TTL) || 300000; // Default 5 minutes (300000 ms)
 const CACHE_DB_PATH = process.env.CACHE_DB_PATH || './cache-db';
 
-// Initialize LevelDB
-const db = new Level(CACHE_DB_PATH, { valueEncoding: 'json' });
+// Initialize LevelDB with error handling
+let db;
+try {
+  db = new Level(CACHE_DB_PATH, { valueEncoding: 'json' });
+  console.log(`📦 LevelDB initialized at ${CACHE_DB_PATH}`);
+} catch (err) {
+  console.error(`❌ Failed to initialize LevelDB at ${CACHE_DB_PATH}:`, err);
+  process.exit(1);
+}
+
+// Graceful shutdown handler
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  try {
+    await db.close();
+    console.log('✅ LevelDB closed');
+  } catch (err) {
+    console.error('Error closing LevelDB:', err);
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  try {
+    await db.close();
+    console.log('✅ LevelDB closed');
+  } catch (err) {
+    console.error('Error closing LevelDB:', err);
+  }
+  process.exit(0);
+});
 
 const CACHE_KEY = 'api-data';
 const TIMESTAMP_KEY = 'api-data-timestamp';
@@ -21,9 +51,16 @@ const TIMESTAMP_KEY = 'api-data-timestamp';
 async function isCacheValid() {
   try {
     const timestamp = await db.get(TIMESTAMP_KEY);
-    if (!timestamp) {
+    if (!timestamp || timestamp === undefined || timestamp === null) {
       return false;
     }
+    
+    // Also verify that data exists
+    const data = await db.get(CACHE_KEY);
+    if (!data || data === undefined || data === null) {
+      return false;
+    }
+    
     const now = Date.now();
     const age = now - timestamp;
     return age < CACHE_TTL;
@@ -45,17 +82,24 @@ async function getCachedData() {
     }
     return data;
   } catch (err) {
+    // Log unexpected errors for debugging
+    if (err.code !== 'LEVEL_NOT_FOUND') {
+      console.error('Error reading cached data:', err);
+    }
     return null;
   }
 }
 
 /**
- * Store data in LevelDB cache
+ * Store data in LevelDB cache using atomic batch operation
  */
 async function setCachedData(data) {
   const timestamp = Date.now();
-  await db.put(CACHE_KEY, data);
-  await db.put(TIMESTAMP_KEY, timestamp);
+  // Use batch operation to ensure atomicity
+  await db.batch([
+    { type: 'put', key: CACHE_KEY, value: data },
+    { type: 'put', key: TIMESTAMP_KEY, value: timestamp }
+  ]);
   return timestamp;
 }
 
@@ -80,50 +124,59 @@ async function getCacheTimestamp() {
 app.get('/health', async (req, res) => {
   try {
     const timestamp = await getCacheTimestamp();
-    const hasData = timestamp !== null;
+    const data = await getCachedData();
+    const hasData = timestamp !== null && data !== null;
     const age = hasData ? Date.now() - timestamp : null;
     
-    res.json({
+    const response = {
       status: 'ok',
       cache: {
         enabled: true,
         type: 'leveldb',
-        path: CACHE_DB_PATH,
         ttl: CACHE_TTL,
         hasData: hasData,
         age: age
       }
-    });
+    };
+    
+    // Only include path in development mode
+    if (process.env.NODE_ENV !== 'production') {
+      response.cache.path = CACHE_DB_PATH;
+    }
+    
+    res.json(response);
   } catch (err) {
     console.error('Health check error:', err);
     res.status(500).json({ status: 'error', message: err.message });
   }
 });
 
-// Test endpoint to populate cache with mock data (for testing only)
-app.post('/test/populate-cache', async (req, res) => {
-  try {
-    const mockData = {
-      items: [
-        { id: 1, name: 'Test Item 1', price: 100 },
-        { id: 2, name: 'Test Item 2', price: 200 }
-      ],
-      traits: ['Fire', 'Ice', 'Lightning']
-    };
-    
-    await setCachedData(mockData);
-    console.log('✅ Cache populated with mock data');
-    
-    res.json({
-      success: true,
-      message: 'Cache populated with mock data',
-      data: mockData
-    });
-  } catch (err) {
-    console.error('Error populating cache:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+// Test endpoint to populate cache with mock data (development only)
+if (process.env.NODE_ENV !== 'production') {
+  app.post('/test/populate-cache', async (req, res) => {
+    try {
+      const mockData = {
+        items: [
+          { id: 1, name: 'Test Item 1', price: 100 },
+          { id: 2, name: 'Test Item 2', price: 200 }
+        ],
+        traits: ['Fire', 'Ice', 'Lightning']
+      };
+      
+      await setCachedData(mockData);
+      console.log('✅ Cache populated with mock data');
+      
+      res.json({
+        success: true,
+        message: 'Cache populated with mock data',
+        data: mockData
+      });
+    } catch (err) {
+      console.error('Error populating cache:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+}
 
 // Simple GET endpoint to return { items, traits }
 app.get('/api/data', async (req, res) => {
